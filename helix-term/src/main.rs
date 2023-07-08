@@ -6,8 +6,8 @@ use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
 use std::path::PathBuf;
 
-fn setup_logging(logpath: PathBuf, verbosity: u64) -> Result<()> {
-    let mut base_config = fern::Dispatch::new();
+fn setup_logging(logpath: Option<PathBuf>, verbosity: u64) -> Result<()> {
+    let mut base_config = fern::Dispatch::new().chain(std::io::stderr());
 
     base_config = match verbosity {
         0 => base_config.level(log::LevelFilter::Warn),
@@ -16,21 +16,29 @@ fn setup_logging(logpath: PathBuf, verbosity: u64) -> Result<()> {
         _3_or_more => base_config.level(log::LevelFilter::Trace),
     };
 
-    // Separate file config so we can include year, month and day in file logs
-    let file_config = fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "{} {} [{}] {}",
-                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                record.target(),
-                record.level(),
-                message
-            ))
-        })
-        .chain(fern::log_file(logpath)?);
+    let logpath = match verbosity {
+        0 => logpath.or_else(|| Some(helix_loader::log_file())),
+        _ => logpath,
+    };
 
-    base_config.chain(file_config).apply()?;
+    if let Some(path) = logpath {
+        // Separate file config so we can include year, month and day in file logs
+        let file_config = fern::Dispatch::new()
+            .format(|out, message, record| {
+                out.finish(format_args!(
+                    "{} {} [{}] {}",
+                    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                    record.target(),
+                    record.level(),
+                    message
+                ))
+            })
+            .chain(fern::log_file(path)?);
 
+        base_config = base_config.chain(file_config);
+    }
+
+    base_config.apply()?;
     Ok(())
 }
 
@@ -116,8 +124,8 @@ FLAGS:
         return Ok(0);
     }
 
-    let logpath = args.log_file.as_ref().cloned().unwrap_or(logpath);
-    setup_logging(logpath, args.verbosity).context("failed to initialize logging")?;
+    setup_logging(args.log_file.as_ref().cloned(), args.verbosity)
+        .context("failed to initialize logging")?;
 
     let config_dir = helix_loader::config_dir();
     if !config_dir.exists() {
